@@ -1,0 +1,51 @@
+#!/usr/bin/env python
+
+import roslib
+roslib.load_manifest('ribbon_cut')
+import sys
+import rospy
+import cv2
+
+import rospkg
+from std_msgs.msg import String
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge, CvBridgeError
+
+class image_converter:
+
+  def __init__(self):
+
+    cv2.namedWindow("Image window", 1)
+    self.bridge = CvBridge()
+    #self.image_sub = rospy.Subscriber("image_topic",Image,self.callback)
+
+    print "loaded image"
+
+
+  def callback(self):
+
+    self._rp = rospkg.RosPack()
+    self._images = (self._rp.get_path('ribbon_cut') +
+                          '/share/images') 
+    img = cv2.imread(self._images + '/baxterwins.png')
+
+    self.image_pub = rospy.Publisher('/robot/xdisplay', Image, latch=True)
+    try:
+      self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
+      print "loaded!"
+    except CvBridgeError, e:
+      print e
+
+
+def main():
+  ic = image_converter()
+  rospy.init_node('image_converter', anonymous=True)
+  ic.callback()
+  try:
+    rospy.spin()
+  except KeyboardInterrupt:
+    print "Shutting down"
+  cv2.destroyAllWindows()
+
+if __name__ == '__main__':
+    main()

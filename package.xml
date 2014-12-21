@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<package>
+  <name>ribbon_cut</name>
+  <version>0.7.0</version>
+  <description>
+    Baxter Ribbon Cut
+  </description>
+
+  <maintainer email="rsdk.support@rethinkrobotics.com">
+    Rethink Robotics Inc.
+  </maintainer>
+  <license>BSD</license>
+  <url type="website">http://www.rethinkrobotics.com/sdk</url>
+  <url type="repository">
+    https://github.com/RethinkRobotics/baxter_examples
+  </url>
+  <url type="bugtracker">
+    https://github.com/RethinkRobotics/baxter_examples/issues
+  </url>
+  <author>Rethink Robotics Inc.</author>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>rospy</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>tf</build_depend>
+  <build_depend>cv_bridge</build_depend>
+  <build_depend>baxter_core_msgs</build_depend>
+  <build_depend>baxter_interface</build_depend>
+  <build_depend>image_transport</build_depend>
+  <build_depend>message_generation</build_depend>
+  <build_depend>opencv2</build_depend>
+
+
+  <run_depend>image_transport</run_depend>
+  <run_depend>message_runtime</run_depend>
+  <run_depend>opencv2</run_depend>
+  <run_depend>rospy</run_depend>
+  <run_depend>sensor_msgs</run_depend>
+  <run_depend>std_msgs</run_depend>
+  <run_depend>tf</run_depend>
+  <run_depend>cv_bridge</run_depend>
+  <run_depend>baxter_core_msgs</run_depend>
+  <run_depend>baxter_interface</run_depend>
+
+</package>

@@ -1,0 +1,50 @@
+#!/usr/bin/python
+
+"""
+Baxter QUT Ribbon Cut
+"""
+
+import argparse
+import sys
+
+from copy import deepcopy
+from math import pow
+from os import system
+
+import rospy
+
+from std_msgs.msg import String
+
+import baxter_interface
+
+import ribbon_cut
+
+
+class RibbonCut(object):
+    def __init__(self, limb):
+
+        self._manipulate = ribbon_cut.PickPlace(limb)
+        self._manipulate.print_acr_image()
+        self._manipulate.get_locations()
+        self._manipulate.move_home()
+
+        raw_input("To cut ribbon - Press enter!")
+
+        self._manipulate.cut()
+        self._manipulate.display_default_image()
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-l', '--limb', dest='limb', choices=['left', 'right'],
+                        required=True, help='limb to control')
+
+    args = parser.parse_args(rospy.myargv()[1:])
+
+    rospy.init_node('ribbon_cut_%s' % (args.limb,))
+
+    cf = RibbonCut(args.limb)
+
+    print "WELCOME TO THE ACR CENTRE OF EXCELLENCE FOR ROBOTIC VISION! "
+
+if __name__ == "__main__":
+    main()
