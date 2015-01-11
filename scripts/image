@@ -36,11 +36,26 @@ class image_converter:
     except CvBridgeError, e:
       print e
 
+  def detectcontours(self):
+    self._rp = rospkg.RosPack()
+    self._images = (self._rp.get_path('connect_four') + '/share/images')
+    im = cv2.imread(self._images + '/default.png')
+    gray=cv2.cvtColor(im,cv2.COLOR_BGR2GRAY)
+    contours,hierarchy = cv2.findContours(gray,cv2.RETR_LIST,cv2.CHAIN_APPROX_SIMPLE)
+    idx =0 
+    for cnt in contours:
+        idx += 1
+        x,y,w,h = cv2.boundingRect(cnt)
+        roi=im[y:y+h,x:x+w]
+        cv2.imwrite(str(idx) + '.png', roi)
+        #cv2.rectangle(im,(x,y),(x+w,y+h),(200,0,0),2)
+    cv2.imshow('img',im)
+    cv2.waitKey(0)  
 
 def main():
   ic = image_converter()
   rospy.init_node('image_converter', anonymous=True)
-  ic.callback()
+  ic.detectcontours()
   try:
     rospy.spin()
   except KeyboardInterrupt:

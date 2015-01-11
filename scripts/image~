@@ -1,50 +1,46 @@
-#!/usr/bin/env python
-
-import roslib
-roslib.load_manifest('ribbon_cut')
-import sys
-import rospy
 import cv2
-
+import numpy
 import rospkg
-from std_msgs.msg import String
-from sensor_msgs.msg import Image
-from cv_bridge import CvBridge, CvBridgeError
 
-class image_converter:
+# Load the image
+rp = rospkg.RosPack()
+images = (self.rp.get_path('connect_four') + '/share/images')
+img = cv2.imread(self.images + '/default.png')
 
-  def __init__(self):
+# Split out each channel
+blue, green, red = cv2.split(img)
 
-    cv2.namedWindow("Image window", 1)
-    self.bridge = CvBridge()
-    #self.image_sub = rospy.Subscriber("image_topic",Image,self.callback)
+def medianCanny(img, thresh1, thresh2):
+    median = numpy.median(img)
+    img = cv2.Canny(img, int(thresh1 * median), int(thresh2 * median))
+    return img
 
-    print "loaded image"
+# Run canny edge detection on each channel
+blue_edges = medianCanny(blue, 0.2, 0.3)
+green_edges = medianCanny(green, 0.2, 0.3)
+red_edges = medianCanny(red, 0.2, 0.3)
 
+# Join edges back into image
+edges = blue_edges | green_edges | red_edges
 
-  def callback(self):
+# Find the contours
+contours,hierarchy = cv2.findContours(edges, cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
 
-    self._rp = rospkg.RosPack()
-    self._images = (self._rp.get_path('ribbon_cut') +
-                          '/share/images') 
-    img = cv2.imread(self._images + '/baxterwins.png')
-    self.image_pub = rospy.Publisher("image_topic_2",img)
-    try:
-      self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
-      print "loaded!"
-    except CvBridgeError, e:
-      print e
+hierarchy = hierarchy[0] # get the actual inner list of hierarchy descriptions
 
+# For each contour, find the bounding rectangle and draw it
+for component in zip(contours, hierarchy):
+    currentContour = component[0]
+    currentHierarchy = component[1]
+    x,y,w,h = cv2.boundingRect(currentContour)
+    if currentHierarchy[2] < 0:
+        # these are the innermost child components
+        cv2.rectangle(img,(x,y),(x+w,y+h),(0,0,255),3)
+    elif currentHierarchy[3] < 0:
+        # these are the outermost parent components
+        cv2.rectangle(img,(x,y),(x+w,y+h),(0,255,0),3)
 
-def main():
-  ic = image_converter()
-  rospy.init_node('image_converter', anonymous=True)
-  ic.callback()
-  try:
-    rospy.spin()
-  except KeyboardInterrupt:
-    print "Shutting down"
-  cv2.destroyAllWindows()
-
-if __name__ == '__main__':
-    main()
+# Finally show the image
+cv2.imshow('img',img)
+cv2.waitKey(0)
+cv2.destroyAllWindows()

@@ -1,31 +1,14 @@
 #!/usr/bin/python
-
-# Copyright (c) 2013, Rethink Robotics
-# All rights reserved.
+#----------------------------------------------------------------------------------
+#----------------------------- QUT Ribbon Cutting ---------------------------------
+# Filename: pick_place_new.py
+# Author:	Matthew Kimball
+# Email:	mp.kimball@gmail.com
+# Date:		11/01/15
 #
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice,
-#    this list of conditions and the following disclaimer.
-# 2. Redistributions in binary form must reproduce the above copyright
-#    notice, this list of conditions and the following disclaimer in the
-#    documentation and/or other materials provided with the distribution.
-# 3. Neither the name of the Rethink Robotics nor the names of its
-#    contributors may be used to endorse or promote products derived from
-#    this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
-# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-# POSSIBILITY OF SUCH DAMAGE.
+# Summary: This code was designed for the intention of cutting a ribbon at the unveiling
+#			of the ACRV (Research Centre for Robotic Vision) using the Baxter Robot. 
+#----------------------------------------------------------------------------------
 
 import collections
 
@@ -35,6 +18,7 @@ import rospy
 import sys
 import tf
 import cv2
+import thread
 
 from cv_bridge import CvBridge, CvBridgeError
 import rospkg
@@ -63,26 +47,58 @@ from baxter_core_msgs.srv import (
 
 
 class PickPlace(object):
-    def __init__(self, limb):
+    def __init__(self):
         self._rp = rospkg.RosPack()
-        self._side = limb
-        self._limb = baxter_interface.Limb(limb)
+        self.right_limb = 'right'
+        self.left_limb = 'left'
+        self._side = self.right_limb
+        self._limb = baxter_interface.Limb(self.right_limb)
+        self._left_limb = baxter_interface.Limb(self.left_limb)
         self._path = self._rp.get_path('ribbon_cut') + '/config/'
         self._images = (self._rp.get_path('ribbon_cut') +
                           '/share/images')
-        dash_io = baxter_interface.DigitalIO(limb + '_upper_button')
-        circle_io = baxter_interface.DigitalIO(limb + '_lower_button')
+        dash_io = baxter_interface.DigitalIO(self.right_limb + '_upper_button')
+        circle_io = baxter_interface.DigitalIO(self.right_limb + '_lower_button')
 
+        self._done = False
+        self._limbs = ('left', 'right')
+        self._arms = {
+            'left': baxter_interface.Limb('left'),
+            'right': baxter_interface.Limb('right'),
+            }
+        self._tuck_rate = rospy.Rate(20.0)  # Hz
+        self._tuck_threshold = 0.2  # radians
+        self._peak_angle = -1.6  # radians
+        self._arm_state = {
+                           'tuck': {'left': 'none', 'right': 'none'},
+                           'collide': {'left': False, 'right': False},
+                           'flipped': {'left': False, 'right': False}
+                          }
+        self._joint_moves = {
+            'tuck': {
+                     'left':  [-1.0, -2.07,  3.0, 2.55,  0.0, 0.01,  0.0],
+                     'right':  [1.0, -2.07, -3.0, 2.55, -0.0, 0.01,  0.0]
+                     },
+            'untuck': {
+                       'left':  [-0.08, -1.0, -1.19, 1.94,  0.67, 1.03, -0.50],
+                       'right':  [0.08, -1.0,  1.19, 1.94, -0.67, 1.03,  0.50]
+                       }
+            }
+
+        self._rs = baxter_interface.RobotEnable(baxter_interface.CHECK_VERSION)
         self.ribbon_location = dict()
         self.cut_location = dict()
-        self.home_jp = dict()
+        self.left_home_jp = dict()
+        self.right_home_jp = dict()
+        self.think_jp = dict()
+        self.shake_head_jp = dict()
+        self.shake_away_jp = dict()
         self.safe_jp = dict()
         self.ribbon_approach = dict()
         self.cut_location = dict()
         self.cut_approach = dict()
         self.bridge = CvBridge()
-
-        self._gripper = baxter_interface.Gripper(limb, baxter_interface.CHECK_VERSION)
+        self._gripper = baxter_interface.Gripper(self.right_limb, baxter_interface.CHECK_VERSION)
 
 		# connect callback fns to signals
         if self._gripper.type() != 'custom':
@@ -96,18 +112,79 @@ class PickPlace(object):
                    " Running cuff-light connection only.") %
                    (self._gripper.name.capitalize(), self._gripper.type()))
             rospy.logwarn(msg)
-        #self._gripper.on_type_changed.connect(self._check_calibration)
 
-        #self._gripper.calibrate()
-        #self._gripper.set_holding_force(100.0)
-
-        ik_srv = "ExternalTools/" + limb + "/PositionKinematicsNode/IKService"
+        ik_srv = "ExternalTools/" + self.right_limb + "/PositionKinematicsNode/IKService"
         self._iksvc = rospy.ServiceProxy(ik_srv, SolvePositionIK)
         self._ikreq = SolvePositionIKRequest()
 
         circle_io.state_changed.connect(self._path_positions)
-        
 
+#----------------------------------------------------------------------------------
+#----------------------------- Initialisation Functions----------------------------
+#----------------------------------------------------------------------------------
+
+	def _check_calibration(self, value):
+		if self._gripper.calibrated():
+		    return True
+		elif value == 'electric':
+		    rospy.loginfo("calibrating %s...",
+		                  self._gripper.name.capitalize())
+		    return (self._gripper.calibrate() == True)
+		else:
+		    return False
+
+    def _check_arm_state(self):
+        """
+        Check for goals and behind collision field.
+
+        If s1 joint is over the peak, collision will need to be disabled
+        to get the arm around the head-arm collision force-field.
+        """
+        diff_check = lambda a, b: abs(a - b) <= self._tuck_threshold
+        for limb in self._limbs:
+            angles = [self._arms[limb].joint_angle(joint)
+                      for joint in self._arms[limb].joint_names()]
+
+            # Check if in a goal position
+            untuck_goal = map(diff_check, angles,
+                              self._joint_moves['untuck'][limb])
+            tuck_goal = map(diff_check, angles[0:2],
+                            self._joint_moves['tuck'][limb][0:2])
+            if all(untuck_goal):
+                self._arm_state['tuck'][limb] = 'untuck'
+            elif all(tuck_goal):
+                self._arm_state['tuck'][limb] = 'tuck'
+            else:
+                self._arm_state['tuck'][limb] = 'none'
+
+            # Check if shoulder is flipped over peak
+            self._arm_state['flipped'][limb] = (
+                self._arms[limb].joint_angle(limb + '_s1') <= self._peak_angle) 
+ 
+#----------------------------------------------------------------------------------
+#----------------------------- Limb Control Functions------------------------------
+#---------------------------------------------------------------------------------- 
+    
+    def _move_to(self, tuck, disabled):
+
+        while (any(self._arm_state['tuck'][limb] != goal
+                   for limb, goal in tuck.viewitems())
+               and not rospy.is_shutdown()):
+
+            for limb in self._limbs:
+                if disabled[limb]:
+                    self._disable_pub[limb].publish(Empty())
+                if limb in tuck:
+                    self._arms[limb].set_joint_positions(dict(zip(
+                                      self._arms[limb].joint_names(),
+                                      self._joint_moves[tuck[limb]][limb])))
+            self._check_arm_state()
+            self._tuck_rate.sleep()
+
+        if any(self._arm_state['collide'].values()):
+            self._rs.disable()
+        return
+        
     def _find_jp(self, pose):
         ikreq = SolvePositionIKRequest()
 
@@ -146,11 +223,7 @@ class PickPlace(object):
 
     def _path_positions(self, value):
         if value:
-            if len(self.home_jp) == 0:
-                # Record home Location
-                print 'Recording camera position'
-                self.home_jp = self._limb.joint_angles()
-            elif len(self.safe_jp) == 0:
+            if len(self.safe_jp) == 0:
                 # Record Safe Location
                 print 'Recording safe location'
                 self.safe_jp = self._limb.joint_angles()
@@ -169,8 +242,9 @@ class PickPlace(object):
                                          self._limb.endpoint_pose(),
                                          0.05)
 
-                
-
+#----------------------------------------------------------------------------------
+#----------------------------- File IO Functions ----------------------------------
+#----------------------------------------------------------------------------------
     def _read_file(self, file):
         with open(file, 'r') as f:
             for line in f:
@@ -178,19 +252,27 @@ class PickPlace(object):
                 location = split[0]
                 prefix = location.split("_")[0]
                 position = split[1]
-                if location == 'home':
-                    self.home_jp = eval(position)
-                elif location == 'ribbon_location':
+                if location == 'ribbon_location':
                     self.ribbon_location = eval(position)
                 elif location == 'cut_location':
                     self.cut_location = eval(position)
                 elif location == 'safe':
                     self.safe_jp = eval(position)
+                elif location == 'right_home':
+                    self.right_home_jp = eval(position)
+                elif location == 'left_home':
+                    self.left_home_jp = eval(position)
+                elif location == 'think':
+                    self.think_jp = eval(position)
+                elif location == 'shake_head':
+                    self.shake_head_jp = eval(position)
+                elif location == 'shake_away':
+                    self.shake_away_jp = eval(position)
+
 
     def _save_file(self, file):
         print "Saving your positions to file!\n\n"
         f = open(file, 'w')
-        f.write('home=' + str(self.home_jp) + '\n')
         f.write('ribbon_location=' + str(self.ribbon_location) + '\n')
         f.write('cut_location=' + str(self.cut_location) + '\n')
         f.write('safe=' + str(self.safe_jp) + '\n')
@@ -200,6 +282,8 @@ class PickPlace(object):
         self._gripper.open()
         good_input = False
         while not good_input:
+            filename2 = self._path + 'arm.config'
+            self._read_file(filename2)
             self.read_file = raw_input("Would you like to use the previously "
                                        "found cut ribbon path locations (y/n)?")
             if self.read_file != 'y' and self.read_file != 'n':
@@ -209,11 +293,6 @@ class PickPlace(object):
                 self._read_file(filename)
                 good_input = True
             else:
-                print ("Move %s arm into home position - press Circle button to confirm"
-                       % (self._side,))
-                while(len(self.home_jp) == 0 and not rospy.is_shutdown()):
-                    rospy.sleep(0.1)
-                print ("Cool - Got it!")
 
                 print ("Move %s arm into a safe location- press Circle button to confirm"% (self._side,))
                 while(len(self.safe_jp) == 0 and not rospy.is_shutdown()):
@@ -235,133 +314,149 @@ class PickPlace(object):
                 self._save_file(filename)
                 good_input = True
 
+#----------------------------------------------------------------------------------
+#----------------------------- Task Functions -------------------------------------
+#----------------------------------------------------------------------------------
     def move_safe(self):
-        self._limb.set_joint_position_speed(1.0)
+        self._limb.set_joint_position_speed(0.7)
         self._limb.move_to_joint_positions(self.safe_jp, threshold=0.1)
 
     def move_home(self):
-        self.move_safe()
-        self._limb.set_joint_position_speed(1.0)
-        self._limb.move_to_joint_positions(self.home_jp)
+        self._left_limb.set_joint_position_speed(0.4)
+        self._limb.set_joint_position_speed(0.4)
+        self._check_arm_state()
+        suppress = deepcopy(self._arm_state['flipped'])
+        actions = {'left': 'untuck', 'right': 'untuck'}
+        self._move_to(actions, suppress)
 
+    def send_image(self, image_name):
+        img = cv2.imread(self._images + image_name)
+        self.image_pub = rospy.Publisher('/robot/xdisplay', Image, latch=True)
+        self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
 
     def cut(self):
         #Eyes closed
-        img = cv2.imread(self._images + '/closed.png')
-        self.image_pub = rospy.Publisher('/robot/xdisplay', Image, latch=True)
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
-        rospy.sleep(0.2)
+        self.send_image('/closed.png')
+        rospy.sleep(0.3)
+
         #Eyes open
-        img = cv2.imread(self._images + '/open.png')
-        self.image_pub = rospy.Publisher('/robot/xdisplay', Image, latch=True)
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
-        rospy.sleep(0.15)
+        self.send_image('/open.png')
+        rospy.sleep(0.4)
 
         #Eyes look right
-        img = cv2.imread(self._images + '/look_right.png')
-        self.image_pub = rospy.Publisher('/robot/xdisplay', Image, latch=True)
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
+
+        self.send_image('/look_right.png')
         self._gripper.open()
-        rospy.sleep(0.2)
+        rospy.sleep(0.5)
 
         #Eyes open
-        img = cv2.imread(self._images + '/open.png')
-        self.image_pub = rospy.Publisher('/robot/xdisplay', Image, latch=True)
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
+        self.send_image('/open.png')
+        rospy.sleep(0.4)
 
+        self.focus_head(-0.4)
+        rospy.sleep(0.2)
         self.move_safe()
-        self._limb.set_joint_position_speed(1.0)
+
+        #Eyes look down
+        self._limb.set_joint_position_speed(0.6)
         self._limb.move_to_joint_positions(self.ribbon_location,
                                            threshold=0.01745)
-        #Eyes look down
-        img = cv2.imread(self._images + '/suprised.png')
-        self.image_pub = rospy.Publisher('/robot/xdisplay', Image, latch=True)
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
-
-        self._limb.set_joint_position_speed(1.0)
+        #Move left arm to worried position
+        self.send_image('/worried.png')
+        self._left_limb.set_joint_position_speed(0.8)
+        self._left_limb.move_to_joint_positions(self.think_jp,
+                                           threshold=0.01745)
+                                                  
+        rospy.sleep(0.3)
+        self._limb.set_joint_position_speed(0.6)
         self._limb.move_to_joint_positions(self.cut_location,
                                            threshold=0.01745)
         self._gripper.command_position(0.0)
-        rospy.sleep(0.5)
+        rospy.sleep(0.4)
+        self.send_image('/suprised.png')
+        self.head_neutral()
+        rospy.sleep(0.4)
+        self.send_image('/open.png')
 
+        #Move left arm to whoop position one
+        self._left_limb.set_joint_position_speed(0.8)
+        self._left_limb.move_to_joint_positions(self.shake_head_jp,
+                                           threshold=0.01745)
         #Eyes appear looking straight forward
-        img = cv2.imread(self._images + '/open.png')
-        self.image_pub = rospy.Publisher('/robot/xdisplay', Image, latch=True)
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
-        rospy.sleep(0.25)
+
+        rospy.sleep(0.3)
 
         #Eyes wink
-        img = cv2.imread(self._images + '/right_wink.png')
-        self.image_pub = rospy.Publisher('/robot/xdisplay', Image, latch=True)
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
-        rospy.sleep(0.2)
+        self.send_image('/right_wink.png')
+        rospy.sleep(0.3)
 
         #Eyes appear looking straight forward
-        img = cv2.imread(self._images + '/open.png')
-        self.image_pub = rospy.Publisher('/robot/xdisplay', Image, latch=True)
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
-        rospy.sleep(0.25)
+        self.send_image('/open.png')
+        rospy.sleep(0.4)
    
         #Eyes close
-        img = cv2.imread(self._images + '/closed.png')
-        self.image_pub = rospy.Publisher('/robot/xdisplay', Image, latch=True)
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
-        rospy.sleep(0.1)
-
-        self.celebrate()
+        self.send_image('/closed.png')
         rospy.sleep(0.2)
+
+        self.nod()
+        rospy.sleep(0.3)
 
         #Eyes appear looking straight forward
-        img = cv2.imread(self._images + '/open.png')
-        self.image_pub = rospy.Publisher('/robot/xdisplay', Image, latch=True)
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
+        self.send_image('/open.png')
 
         self.move_safe()
+        #self.blink()
+
         self.move_home()
-        rospy.sleep(0.2)
+        self._gripper.command_position(100.0, block=True)
+        self.send_image('/closed.png')
+        rospy.sleep(1.5)
 
     def print_acr_image(self):
-        img = cv2.imread(self._images + '/ACR.png')
-        self.image_pub = rospy.Publisher('/robot/xdisplay', Image, latch=True)
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
+        self.send_image('/ACRV.png')
 
     def display_default_image(self):
-        img = cv2.imread(self._images + '/default.png')
-        self.image_pub = rospy.Publisher('/robot/xdisplay', Image, latch=True)
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
+        self.send_image('/default.png')
 
+    def blink(self):
+        self.send_image('/closed.png')
+        rospy.sleep(0.2)
+        self.send_image('/open.png')
 
-    def celebrate(self):
+    def head_neutral(self):
+        head = baxter_interface.Head()        
+        head.set_pan(0.0)
 
+    def focus_head(self, angle):
         head = baxter_interface.Head()
-        for _ in xrange(3):
-            head.command_nod()
-            self._gripper.command_position(100.0, block=True)
-        #return
-
+        head.set_pan(angle, speed=10, timeout=500)
+        head.pan()
 
     def nod(self):
         head = baxter_interface.Head()
-        for _ in xrange(2):
+        for _ in xrange(3):
             head.command_nod()
 
-	def _check_calibration(self, value):
-		if self._gripper.calibrated():
-		    return True
-		elif value == 'electric':
-		    rospy.loginfo("calibrating %s...",
-		                  self._gripper.name.capitalize())
-		    return (self._gripper.calibrate() == True)
-		else:
-		    return False
+    def test_function(self):
+        '''
+        try:
+            thread.start_new_thread(self.celebrate, ())
+            thread.start_new_thread(self.boo, ())
+        except Exception, e:
+            print str(e)
+        '''
+        self.focus_head()
+        self.set_head_neutral()
 
+#----------------------------------------------------------------------------------
+#----------------------------- Main Function --------------------------------------
+#----------------------------------------------------------------------------------
 def main():
     rospy.init_node("ribbon_cutting")
 
     rs = baxter_interface.RobotEnable()
     print("Enabling robot... ")
     rs.enable()
-
 
 if __name__ == "__main__":
     main()
